@@ -5,7 +5,7 @@
 | 插件 | 目录 | 功能 |
 |---|---|---|
 | **dsh-token-stats**（使用统计） | [`dsh-token-stats/`](dsh-token-stats/) | 会话视图新增「使用统计」标签页：Token 用量卡片、活跃热力图、按天趋势图、模型用量环形图 |
-| **dsh-navbar**（导航栏） | [`dsh-navbar/`](dsh-navbar/) | 头部导航按钮 + 右侧滑出面板（自制插件 / 子代理 / MCP 服务器 / 自动化），子代理资产管理（CRUD + `run_subagent_asset` 工具） |
+| **dsh-navbar**（导航栏） | [`dsh-navbar/`](dsh-navbar/) | 头部导航按钮 + 右侧滑出面板（自制插件 / 子代理 / MCP 服务器 / 自动化）：子代理资产管理、MCP 服务器实时挂载、后台任务监控 |
 | **dsh-filecard**（文件卡片 + 识图） | [`dsh-filecard/`](dsh-filecard/) | 输入框右端常驻文件卡片：拖入/点击选择文件生成真实路径；`describe_image` 识图工具（直连视觉模型） |
 
 ## ✨ 功能详情
@@ -24,9 +24,10 @@
 
 - 会话头部新增「🧭 导航」按钮，点击展开右侧滑出面板
 - 四个分区：🧩 自制插件 / 🤖 子代理 / 🔌 MCP 服务器 / ⚙️ 自动化
-- 子代理资产支持创建 / 编辑 / 启停，持久化到 `assets.json`（可用 `DSH_NAVBAR_ASSETS_FILE` 重定向）
-- 模型工具 `run_subagent_asset`：按资产定义（模型 + 系统提示词 + 工具白名单）直接拉起子代理执行任务
-- 自制插件分区可以开关其他插件（`dsh-filecard` 等读取同一份开关状态，实时生效）
+- **自制插件**：开关其他插件（`dsh-filecard` 等读取同一份开关状态，实时生效）
+- **子代理**：资产创建 / 编辑 / 启停，持久化到 `assets.json`（可用 `DSH_NAVBAR_ASSETS_FILE` 重定向）；工具选择器按 MCP 服务器 / 插件分组；模型工具 `run_subagent_asset` 按资产定义（模型 + 系统提示词 + 工具白名单）直接拉起子代理执行任务
+- **MCP 服务器**：持久化登记（`mcp-servers.json`）并**实时挂载**——保存/开启即通过 `ctx.plugin` 拉起 `@deepseek-ai/dsh-mcp-client` 实例，工具立刻生效，无需重启；支持 stdio 与 streamable-http 两种传输，表单 / JSON 双模式编辑；自动识别 `cordis.patch.yml` 里的系统 MCP 服务器（只读展示，不托管）
+- **自动化**：资产登记（名称 / 描述 / 规格说明，持久化到 `automation-assets.json`）+ 实时后台任务列表（来自 `ctx.jobs`，3 秒轮询，可一键终止运行中的任务）
 
 ### dsh-filecard（文件卡片 + 识图）
 
@@ -60,7 +61,7 @@ dsh plugin --profile web add dsh-filecard
 dsh web
 ```
 
-> 依赖说明：插件的 peer 依赖（`@deepseek-ai/cordis`、`@deepseek-ai/dsh-typert-protocol`、`@deepseek-ai/dsh-tools` 等）由 DSH 安装提供，不在公开 npm 上。若 bundle 位于 node_modules 树之外导致裸说明符解析失败，可在 bundle 内建 `node_modules/` 软链指向 DSH profile 的 node_modules。
+> 依赖说明：插件的 peer 依赖（`@deepseek-ai/cordis`、`@deepseek-ai/dsh-typert-protocol`、`@deepseek-ai/dsh-tools`、`@deepseek-ai/dsh-mcp-client` 等）由 DSH 安装提供，不在公开 npm 上。若 bundle 位于 node_modules 树之外导致裸说明符解析失败，可在 bundle 内建 `node_modules/` 软链指向 DSH profile（`~/.dsh/profiles/node_modules`）或 dsh 安装目录（`<dsh>/node_modules`）。
 
 ### 卸载
 
@@ -77,7 +78,9 @@ dsh plugin --profile web remove dsh-filecard
 | `DSH_UPLOAD_DIR` | `~/uploads` | dsh-filecard | 文件卡片存储目录（也是 `describe_image` 的读取白名单） |
 | `DSH_OPENCODE_BASE` | `https://opencode.ai/zen/go/v1` | dsh-filecard | OpenAI 兼容识图 API 地址 |
 | `DSH_IMAGE_MODEL` | `mimo-v2.5` | dsh-filecard | 识图使用的视觉模型 |
-| `DSH_NAVBAR_ASSETS_FILE` | bundle 目录下的 `assets.json` | dsh-navbar | 子代理资产持久化文件位置（bundle 只读时建议指向用户数据目录） |
+| `DSH_NAVBAR_ASSETS_FILE` | bundle 目录下的 `assets.json` | dsh-navbar | 子代理资产持久化文件位置 |
+| `DSH_NAVBAR_MCP_FILE` | bundle 目录下的 `mcp-servers.json` | dsh-navbar | MCP 服务器登记文件位置（bundle 只读时建议指向用户数据目录） |
+| `DSH_NAVBAR_AUTOMATION_FILE` | bundle 目录下的 `automation-assets.json` | dsh-navbar | 自动化资产登记文件位置 |
 
 ## 📁 目录结构
 
@@ -92,10 +95,12 @@ dsh-plugins/
 │       └── client.js         # Client：使用统计标签页（React）
 ├── dsh-navbar/               # 导航栏
 │   └── lib/
-│       ├── index.js          # Host：SubagentAssetsService + run_subagent_asset 工具
-│       ├── typert.host.js    # Host TYPERT 严格清单
-│       ├── client.js         # Client：导航按钮 + 滑出面板
-│       └── assets.example.json  # 子代理资产格式示例（运行时数据写入 assets.json，不入库）
+│       ├── index.js          # Host：SubagentAssetsService + McpServersService + run_subagent_asset 工具
+│       ├── typert.host.js    # Host TYPERT 严格清单（subagentAssets / mcpServers 两个服务）
+│       ├── client.js         # Client：导航按钮 + 滑出面板（四分区）
+│       ├── assets.example.json       # 子代理资产格式示例
+│       └── mcp-servers.example.json  # MCP 服务器登记格式示例（stdio / streamable-http）
+│   # 运行时数据（不入库）：assets.json / mcp-servers.json / automation-assets.json
 └── dsh-filecard/             # 文件卡片 + 识图
     └── lib/
         ├── index.js          # Host：FileCardService + describe_image 工具

@@ -3,6 +3,8 @@ node_modules/
 
 # Runtime state - never commit local data
 dsh-navbar/lib/assets.json
+dsh-navbar/lib/mcp-servers.json
+dsh-navbar/lib/automation-assets.json
 
 # Misc
 *.log

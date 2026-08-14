@@ -1,0 +1,30 @@
+[
+  {
+    "id": "mcp-example-fs",
+    "name": "filesystem",
+    "serverName": "fs",
+    "transport": "stdio",
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allow"],
+    "env": {},
+    "cwd": "",
+    "url": "",
+    "headers": {},
+    "timeoutMs": 30000,
+    "enabled": true
+  },
+  {
+    "id": "mcp-example-http",
+    "name": "remote-mcp",
+    "serverName": "remote",
+    "transport": "streamable-http",
+    "command": "",
+    "args": [],
+    "env": {},
+    "cwd": "",
+    "url": "https://example.com/mcp",
+    "headers": { "Authorization": "Bearer YOUR_TOKEN" },
+    "timeoutMs": 30000,
+    "enabled": false
+  }
+]

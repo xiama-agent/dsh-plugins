@@ -1,24 +1,36 @@
 {
   "name": "dsh-navbar",
-  "description": "右侧导航栏：头部按钮展开右侧滑出面板，含自制插件/子代理/MCP服务器/自动化四个入口（骨架）",
-  "version": "1.0.0",
+  "description": "右侧导航栏：头部按钮展开右侧滑出面板，含自制插件/子代理/MCP服务器/自动化四个分区",
+  "version": "1.1.0",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
-    ".": { "default": "./lib/index.js" },
-    "./typert": { "default": "./lib/typert.host.js" },
-    "./client": { "default": "./lib/client.js" },
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./typert": {
+      "default": "./lib/typert.host.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
     "./package.json": "./package.json"
   },
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
-    "client": { "inject": [], "platform": "web" }
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [],
+      "platform": "web"
+    }
   },
   "peerDependencies": {
     "react": "^18.2.0",
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-tools": "^0.1.0",
-    "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.6"
+    "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-mcp-client": "^0.1.0"
   }
 }
