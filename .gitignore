@@ -1,0 +1,9 @@
+# Dependencies (resolved from the DSH harness installation)
+node_modules/
+
+# Runtime state - never commit local data
+dsh-navbar/lib/assets.json
+
+# Misc
+*.log
+.DS_Store

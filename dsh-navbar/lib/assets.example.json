@@ -1,0 +1,11 @@
+[
+  {
+    "id": "example-image-viewer",
+    "name": "image-viewer",
+    "model": "mimo-v2.5",
+    "desc": "专门用来识图的子智能体",
+    "prompt": "你是图片查看专家子智能体。你的唯一职责是查看、解读和分析用户提供的图片，并给出清晰、准确、要点化的回答。",
+    "tools": ["read", "bash", "describe_image", "read_image"],
+    "enabled": true
+  }
+]
