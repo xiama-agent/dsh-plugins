@@ -1,0 +1,21 @@
+{
+  "name": "dsh-settings-nav",
+  "description": "设置栏栏目：子代理 / MCP 服务器管理页（UI 从 dsh-navbar 提取，复用其 host RPC，客户端专用 bundle）",
+  "version": "1.0.0",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": { "default": "./lib/index.js" },
+    "./client": { "default": "./lib/client.js" },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": { "inject": [], "platform": "web" }
+  },
+  "peerDependencies": {
+    "react": "^18.2.0",
+    "@deepseek-ai/cordis": "^4.0.1"
+  }
+}

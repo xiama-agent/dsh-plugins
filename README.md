@@ -1,11 +1,12 @@
 # dsh-plugins
 
-[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）社区插件合集。三个开箱即用的 feature bundle，为 DSH Web 界面添加使用统计、导航栏与文件卡片/识图能力。
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）社区插件合集。开箱即用的 feature bundle，为 DSH Web 界面添加使用统计、导航栏、设置栏子代理/MCP 管理与文件卡片/识图能力。
 
 | 插件 | 目录 | 功能 |
 |---|---|---|
-| **dsh-token-stats**（使用统计） | [`dsh-token-stats/`](dsh-token-stats/) | 会话视图新增「使用统计」标签页：Token 用量卡片、活跃热力图、按天趋势图、模型用量环形图 |
-| **dsh-navbar**（导航栏） | [`dsh-navbar/`](dsh-navbar/) | 头部导航按钮 + 右侧滑出面板（自制插件 / 子代理 / MCP 服务器 / 自动化）：子代理资产管理、MCP 服务器实时挂载、后台任务监控 |
+| **dsh-token-stats**（使用统计） | [`dsh-token-stats/`](dsh-token-stats/) | 会话视图新增「使用统计」标签页：Token 用量卡片、活跃热力图、按天趋势图、模型用量环形图 + 实时 Token 投影 |
+| **dsh-navbar**（导航栏） | [`dsh-navbar/`](dsh-navbar/) | 头部导航按钮 + 右侧滑出面板（自制插件 / 子代理 / MCP 服务器 / 自动化）：子代理资产管理（含 `run_subagent_asset` 识图子代理工具）、MCP 服务器实时管理、插件工具开关中心 |
+| **dsh-settings-nav**（设置栏子代理/MCP） | [`dsh-settings-nav/`](dsh-settings-nav/) | 设置栏「插件」与「agent预设」之间的两个栏目：🤖 子代理 / 🔌 MCP 服务器 管理页（client-only，复用 dsh-navbar 的 host RPC） |
 | **dsh-filecard**（文件卡片 + 识图） | [`dsh-filecard/`](dsh-filecard/) | 输入框右端常驻文件卡片：拖入/点击选择文件生成真实路径；`describe_image` 识图工具（直连视觉模型） |
 
 ## ✨ 功能详情
