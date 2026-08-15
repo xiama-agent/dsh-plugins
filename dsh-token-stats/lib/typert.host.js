@@ -22,6 +22,8 @@ const statsSuccessSchema = z.object({
   messages: z.number(),
   activeDays: z.number(),
   streak: z.number(),
+  cachedAt: z.number(),
+  stale: z.boolean(),
   days: z.array(z.object({
     date: z.string(),
     key: z.string(),

@@ -5,6 +5,7 @@ node_modules/
 dsh-navbar/lib/assets.json
 dsh-navbar/lib/mcp-servers.json
 dsh-navbar/lib/automation-assets.json
+dsh-token-stats/lib/token-stats-cache.json
 
 # Misc
 *.log

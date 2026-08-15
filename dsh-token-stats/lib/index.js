@@ -11,6 +11,13 @@
 // NOTE: runs directly in the Host Cordis loader (Node ESM) — no decorator
 // syntax (Node 22 rejects it), no dynamic-plugin harness globals.
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
+import { z } from 'zod'
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const BUNDLE_DIR = dirname(fileURLToPath(import.meta.url))
+const CACHE_FILE = join(BUNDLE_DIR, 'token-stats-cache.json')
 
 function dayKey(ts) {
   const d = new Date(ts)
@@ -23,6 +30,219 @@ function dayKey(ts) {
 // also caches the last payload so revisits render immediately.
 const SCAN_TTL = 300000
 
+// ---------------------------------------------------------------------------
+// Live token projection — 移植自 @linxin666/dsh-live-stats (Apache-2.0)。
+// 注册与官方同名的 `liveTokenUsage` 会话投影：ui-conversation 原生读取并
+// 在会话状态行渲染实时估算（Input ~xK tok · Output ~y tok · TPS z tok/s），
+// 效果与 live-stats 完全一致（客户端零改动，数据随流式事件实时折叠）。
+// ---------------------------------------------------------------------------
+function isSurfaceEvent(event) {
+  return (event.type === 'user/message' || event.type === 'assistant/message' || event.type === 'tool/result') && event.surfaceOp !== undefined
+}
+function resolveEstimatorConfig(config) {
+  const known = new Set(['charsPerToken', 'blockOverhead', 'roleOverhead'])
+  for (const key of Object.keys(config)) if (!known.has(key)) throw new Error('live-stats: unknown config key "' + key + '"')
+  const spec = {
+    charsPerToken: config.charsPerToken ?? 4,
+    blockOverhead: config.blockOverhead ?? 4,
+    roleOverhead: config.roleOverhead ?? 4,
+  }
+  if (!Number.isFinite(spec.charsPerToken) || spec.charsPerToken <= 0) throw new Error('live-stats: charsPerToken must be a positive finite number')
+  for (const key of ['blockOverhead', 'roleOverhead']) if (!Number.isInteger(spec[key]) || spec[key] < 0) throw new Error('live-stats: ' + key + ' must be a non-negative integer')
+  return spec
+}
+function estimateTextBlockTokens(characters, spec) {
+  return Math.ceil(characters / spec.charsPerToken) + spec.blockOverhead
+}
+function estimateToolCallBlockTokens(nameCharacters, argumentCharacters, spec) {
+  return Math.ceil(nameCharacters / spec.charsPerToken) + Math.ceil(argumentCharacters / spec.charsPerToken) + spec.blockOverhead
+}
+const MAX_CONTENT_DEPTH = 128
+function estimateContentBlocks(blocks, spec, depth) {
+  let tokens = 0
+  for (const block of blocks) switch (block.type) {
+    case 'text':
+    case 'reasoning':
+      tokens += estimateTextBlockTokens(block.text.length, spec)
+      break
+    case 'tool-call':
+      tokens += estimateToolCallBlockTokens(block.name.length, block.arguments.length, spec)
+      break
+    case 'tool-result':
+      tokens += depth >= MAX_CONTENT_DEPTH ? spec.blockOverhead : estimateContentBlocks(block.content, spec, depth + 1) + spec.blockOverhead
+      break
+    default: tokens += spec.blockOverhead + Math.ceil(JSON.stringify(block).length / spec.charsPerToken)
+  }
+  return tokens
+}
+function estimateContentTokens(blocks, spec) {
+  return estimateContentBlocks(blocks, spec, 0)
+}
+function estimateMessageTokens(message, spec) {
+  return estimateContentTokens(message.content, spec) + spec.roleOverhead
+}
+function estimateHeaderTokens(header, spec) {
+  if (header === undefined) return 0
+  let tokens = 0
+  if (header.system !== undefined) tokens += Math.ceil(header.system.length / spec.charsPerToken) + spec.roleOverhead
+  if (header.tools !== undefined && header.tools.length > 0) tokens += Math.ceil(JSON.stringify(header.tools).length / spec.charsPerToken) + spec.blockOverhead
+  return tokens
+}
+const zeroBuckets = () => ({ uncachedInputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 })
+const bucketsFrom = (usage) => ({ uncachedInputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cacheReadTokens: usage.cacheReadTokens ?? 0, cacheWriteTokens: usage.cacheWriteTokens ?? 0 })
+const addReplacing = (totals, previous, next) => ({
+  uncachedInputTokens: totals.uncachedInputTokens - (previous?.uncachedInputTokens ?? 0) + next.uncachedInputTokens,
+  outputTokens: totals.outputTokens - (previous?.outputTokens ?? 0) + next.outputTokens,
+  cacheReadTokens: totals.cacheReadTokens - (previous?.cacheReadTokens ?? 0) + next.cacheReadTokens,
+  cacheWriteTokens: totals.cacheWriteTokens - (previous?.cacheWriteTokens ?? 0) + next.cacheWriteTokens,
+})
+const projectionSchema = z.object({
+  uncachedInputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  cacheReadTokens: z.number().int().nonnegative(),
+  cacheWriteTokens: z.number().int().nonnegative(),
+  estimated: z.boolean(),
+  tokensPerSecond: z.number().nonnegative().optional(),
+}).strict()
+function surfaceMessage(event) {
+  switch (event.type) {
+    case 'user/message': return event.data
+    case 'assistant/message':
+    case 'tool/result': return event.data.message
+  }
+}
+function applySurface(state, event, spec) {
+  const tokens = estimateMessageTokens(surfaceMessage(event), spec)
+  if (event.surfaceOp === 'append') {
+    state.surface.set(event.seq, tokens)
+    return { surface: state.surface, surfaceTokens: state.surfaceTokens + tokens }
+  }
+  const operation = event.surfaceOp
+  if (!state.surface.has(operation.start) || !state.surface.has(operation.end) || operation.start > operation.end) throw new Error('live-stats: replace at seq ' + event.seq + ' has invalid current range ' + operation.start + '-' + operation.end)
+  let removed = 0
+  for (const [seq, nodeTokens] of state.surface) {
+    if (seq < operation.start) continue
+    if (seq > operation.end) break
+    removed += nodeTokens
+    state.surface.delete(seq)
+  }
+  state.surface.set(event.seq, tokens)
+  return { surface: state.surface, surfaceTokens: state.surfaceTokens - removed + tokens }
+}
+function blockEstimate(block, spec) {
+  switch (block.kind) {
+    case 'text':
+    case 'reasoning': return estimateTextBlockTokens(block.characters, spec)
+    case 'tool-call': return estimateToolCallBlockTokens(block.nameCharacters, block.argumentCharacters, spec)
+    case 'fixed': return block.tokens
+  }
+}
+function writeBlock(active, index, previous, next, spec) {
+  active.pricedTokens += blockEstimate(next, spec) - (previous === undefined ? 0 : blockEstimate(previous, spec))
+  if (previous === undefined) active.pricedBlocks += 1
+  active.blocks[index] = next
+}
+function applyOutputChunk(active, chunk, spec) {
+  switch (chunk.type) {
+    case 'text-delta': {
+      if (chunk.text === '') return false
+      const previous = active.blocks[chunk.index]
+      writeBlock(active, chunk.index, previous, { kind: 'text', characters: (previous?.kind === 'text' ? previous.characters : 0) + chunk.text.length }, spec)
+      return true
+    }
+    case 'reasoning-delta': {
+      if (chunk.text === '') return false
+      const previous = active.blocks[chunk.index]
+      writeBlock(active, chunk.index, previous, { kind: 'reasoning', characters: (previous?.kind === 'reasoning' ? previous.characters : 0) + chunk.text.length }, spec)
+      return true
+    }
+    case 'tool-call-delta': {
+      if (chunk.name === undefined && chunk.argumentsDelta === '') return false
+      const previous = active.blocks[chunk.index]
+      writeBlock(active, chunk.index, previous, {
+        kind: 'tool-call',
+        nameCharacters: chunk.name?.length ?? (previous?.kind === 'tool-call' ? previous.nameCharacters : 0),
+        argumentCharacters: (previous?.kind === 'tool-call' ? previous.argumentCharacters : 0) + chunk.argumentsDelta.length,
+      }, spec)
+      return true
+    }
+    case 'block-end': {
+      const previous = active.blocks[chunk.index]
+      writeBlock(active, chunk.index, previous, { kind: 'fixed', tokens: estimateContentTokens([chunk.block], spec) }, spec)
+      return true
+    }
+    default: return false
+  }
+}
+function rateOf(step) {
+  if (step.firstOutputTime === undefined || step.latestOutputTime === undefined) return
+  const elapsedMs = step.latestOutputTime - step.firstOutputTime
+  if (elapsedMs <= 0 || step.buckets.outputTokens <= 0) return
+  return step.buckets.outputTokens * 1000 / elapsedMs
+}
+function exactStep(step, usage, time) {
+  return {
+    ...step,
+    buckets: bucketsFrom(usage),
+    exact: true,
+    blocks: [],
+    pricedTokens: 0,
+    pricedBlocks: 0,
+    ...usage.outputTokens > 0 ? { firstOutputTime: step.firstOutputTime ?? time, latestOutputTime: time } : {},
+  }
+}
+function projectionView(state) {
+  const active = state.active
+  const previous = active !== null && state.last?.turn === active.turn && state.last.step === active.step ? state.last : undefined
+  const buckets = active === null ? state.settled : addReplacing(state.settled, previous?.buckets, active.buckets)
+  const estimates = state.settledEstimates - (previous?.estimated === true ? 1 : 0) + (active !== null && !active.exact ? 1 : 0)
+  const rate = active === null ? state.last?.tokensPerSecond : rateOf(active) ?? state.last?.tokensPerSecond
+  return {
+    ...buckets,
+    estimated: estimates > 0,
+    ...rate === undefined ? {} : { tokensPerSecond: rate },
+  }
+}
+function createLiveTokenUsageProjectionDefinition(spec) {
+  return {
+    key: 'liveTokenUsage',
+    schema: projectionSchema,
+    init: () => ({ settled: zeroBuckets(), settledEstimates: 0, last: null, surface: new Map(), surfaceTokens: 0, header: undefined, active: null }),
+    apply: (state, event) => {
+      let next = state
+      if (event.type === 'step/start') next = { ...next, active: { ...event.data, buckets: { ...zeroBuckets(), uncachedInputTokens: estimateHeaderTokens(state.header, spec) + state.surfaceTokens }, exact: false, blocks: [], pricedTokens: 0, pricedBlocks: 0 } }
+      else if (event.type === 'request/header') next = { ...next, header: event.data.header, ...next.active === null ? {} : { active: { ...next.active, buckets: { ...next.active.buckets, uncachedInputTokens: estimateHeaderTokens(event.data.header, spec) + state.surfaceTokens } } } }
+      else if (event.type === 'assistant/chunk' && next.active !== null) {
+        const { chunk } = event.data
+        if (chunk.type === 'usage') next = { ...next, active: exactStep(next.active, chunk.usage, event.time) }
+        else if (!next.active.exact) {
+          const active = { ...next.active }
+          if (applyOutputChunk(active, chunk, spec)) {
+            const tokens = active.pricedBlocks === 0 ? 0 : active.pricedTokens + spec.roleOverhead
+            next = { ...next, active: { ...active, buckets: { ...active.buckets, outputTokens: tokens }, ...tokens > 0 ? { firstOutputTime: active.firstOutputTime ?? event.time, latestOutputTime: event.time } : {} } }
+          }
+        }
+      } else if (event.type === 'assistant/message' && next.active !== null) next = { ...next, active: event.data.usage === undefined ? { ...next.active, ...next.active.buckets.outputTokens > 0 ? { latestOutputTime: event.time } : {} } : exactStep(next.active, event.data.usage, event.time) }
+      else if (event.type === 'step/end' && next.active !== null) {
+        const active = next.active
+        const rate = rateOf(active)
+        const previous = next.last?.turn === active.turn && next.last.step === active.step ? next.last : undefined
+        next = {
+          ...next,
+          settled: addReplacing(next.settled, previous?.buckets, active.buckets),
+          settledEstimates: next.settledEstimates - (previous?.estimated === true ? 1 : 0) + (!active.exact ? 1 : 0),
+          last: { turn: active.turn, step: active.step, buckets: active.buckets, estimated: !active.exact, tokensPerSecond: rate ?? state.last?.tokensPerSecond },
+          active: null,
+        }
+      } else if (event.type === 'turn/end' && event.data.reason.kind !== 'completed' && next.last?.turn === event.data.turn && next.last.estimated) next = { ...next, settled: addReplacing(next.settled, next.last.buckets, zeroBuckets()), settledEstimates: next.settledEstimates - 1, last: null }
+      if (isSurfaceEvent(event)) next = { ...next, ...applySurface(next, event, spec) }
+      return next
+    },
+    view: projectionView,
+    stateVersion: 2,
+  }
+}
+
 export default class TokenStatsService extends TypertRemoteService {
   static inject = ['shell']
 
@@ -33,21 +253,65 @@ export default class TokenStatsService extends TypertRemoteService {
     // instead of rescanning every zstd file; a manual refresh or new logs
     // invalidate it.
     this._cache = null
+    // Live usage projection (移植自 @linxin666/dsh-live-stats)：注册同名
+    // liveTokenUsage，ui-conversation 会话状态行自动显示实时 Token/TPS。
+    const sessionProjections = ctx.get('sessionProjections')
+    if (sessionProjections !== undefined) {
+      const spec = resolveEstimatorConfig({})
+      ctx.effect(() => sessionProjections.register(createLiveTokenUsageProjectionDefinition(spec)))
+    }
   }
 
   // Strict endpoint "tokenStats/stats" (see ./typert.host.js). No wired args:
   // the gateway invokes it with an empty args object, so this method takes no
   // parameters and defaults to the 30-day overview.
+  // Cache-first stats: fresh in-memory scan -> instant; else disk cache ->
+  // instant (stale) with a background rescan; else wait for one scan.
+  // `stale` lets the client render immediately and refresh silently.
   async stats() {
-    const rangeDays = 365
     const shell = this.ctx.get('shell')
-    let stats
-    if (shell) {
-      stats = await this.scanned(shell)
-    } else {
-      stats = { byDay: new Map(), byModel: new Map(), sessionCount: 0, messageCount: 0, grandTotal: 0, toolByDay: new Map() }
+    const now = Date.now()
+    if (this._cache && now - this._cache.at < SCAN_TTL) {
+      return Object.assign({}, this._cache.view, { stale: false, cachedAt: this._cache.at })
     }
-    if (stats.error) return stats
+    const disk = this._readDiskCache()
+    if (disk) {
+      this._kickScan(shell)
+      return Object.assign({}, disk.view, { stale: true, cachedAt: disk.at })
+    }
+    const view = await this._kickScan(shell)
+    if (!view) return { error: '会话日志扫描失败' }
+    return Object.assign({}, view, { stale: false, cachedAt: Date.now() })
+  }
+
+  // One full scan, shared across concurrent callers; updates memory + disk
+  // cache when done. Returns the built view or null on failure.
+  _kickScan(shell) {
+    if (!this._scanning) {
+      this._scanning = (async () => {
+        try {
+          const raw = shell
+            ? await this.scanAll(shell)
+            : { byDay: new Map(), byModel: new Map(), sessionCount: 0, messageCount: 0, grandTotal: 0, toolByDay: new Map() }
+          const view = this.buildView(raw)
+          const at = Date.now()
+          this._cache = { at, view }
+          this._writeDiskCache(view, at)
+          return view
+        } catch (e) {
+          console.error('[token-stats] scan failed:', e && e.message ? e.message : e)
+          return null
+        } finally {
+          this._scanning = null
+        }
+      })()
+    }
+    return this._scanning
+  }
+
+  // raw scan result -> view model (pure; also reused by the disk cache).
+  buildView(stats) {
+    const rangeDays = 365
     const byDay = stats.byDay, toolByDay = stats.toolByDay
     const dates = Array.from(byDay.keys()).sort()
     const today = new Date(); today.setHours(0, 0, 0, 0)
@@ -112,34 +376,20 @@ export default class TokenStatsService extends TypertRemoteService {
     }
   }
 
-  // Cache-aware scan: scans once, then serves the cached result for SCAN_TTL
-  // ms, invalidating early when the set of session log files changes (new
-  // sessions/chats) or when forced (the client's 刷新 button clears the TTL).
-  async scanned(shell) {
-    const now = Date.now()
-    const cache = this._cache
-    const fileKey = await this.sessionFileKey(shell)
-    if (cache && cache.key === fileKey && now - cache.at < SCAN_TTL) {
-      return cache.stats
-    }
-    const stats = await this.scanAll(shell)
-    this._cache = { key: fileKey, at: now, stats }
-    return stats
+  _readDiskCache() {
+    try {
+      const raw = readFileSync(CACHE_FILE, 'utf8')
+      const obj = JSON.parse(raw)
+      if (obj && obj.view && typeof obj.at === 'number') return { view: obj.view, at: obj.at }
+    } catch (e) { /* absent or malformed */ }
+    return null
   }
 
-  // The glob set of session log files, joined, used as the cache key so a new
-  // chat (a new log file) triggers a rescan even inside the TTL.
-  async sessionFileKey(shell) {
-    const cmd = "python3 -c \"import glob,os;print('|'.join(sorted(glob.glob(os.path.expanduser('~/.dsh/sessions/*/*/session.jsonl.zstd')))))\""
-    const spec = shell.resolve({ command: cmd, timeoutMs: 10000, stdoutMaxBytes: 1024 * 1024 })
-    const run = await shell.run(spec)
-    return ((run.stdout && run.stdout.text) || '').trim().split('\n').pop() || ''
-  }
-
-  // Expire the cache immediately (called by an RPC exposed for the client's
-  // refresh button if desired). Not part of the strict manifest for now.
-  clearCache() {
-    this._cache = null
+  _writeDiskCache(view, at) {
+    try {
+      mkdirSync(dirname(CACHE_FILE), { recursive: true })
+      writeFileSync(CACHE_FILE, JSON.stringify({ at, view }), 'utf8')
+    } catch (e) { /* best effort */ }
   }
 
   async scanAll(shell) {

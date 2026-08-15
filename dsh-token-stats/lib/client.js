@@ -157,25 +157,45 @@ window.__ModuleLoader__.load({
 
     // Module-level payload cache: switching views re-renders the page, so keep
     // the last good payload and render it immediately while a background fetch
-    // refreshes (host also caches scans for 5 minutes).
+    // refreshes (host also caches scans for 5 minutes + disk cache).
     let lastData = null
+
+    function fmtTime(ms) {
+      if (!ms) return ''
+      const d = new Date(ms)
+      const p = (n) => (n < 10 ? '0' : '') + n
+      return p(d.getHours()) + ':' + p(d.getMinutes())
+    }
 
     function TokenStatsPage(props) {
       const connection = props.connection
       const [data, setData] = react.useState(lastData), [err, setErr] = react.useState(null), [tick, setTick] = react.useState(0), [loading, setLoading] = react.useState(false)
       react.useEffect(function () {
         let alive = true
+        let retries = 0
         setLoading(true)
-        ;(async function () {
-          try {
-            const full = await connection.rpc.call('/api', 'tokenStats/stats', { args: {} })
-            if (alive) {
-              if (full && full.ok && full.value && !full.value.error) { lastData = full.value; setData(full.value); setErr(null) }
-              else { setErr((full && full.value && full.value.error) || (full && !full.ok ? (full.error && full.error.message) : 'no data')) }
+        function load() {
+          connection.rpc.call('/api', 'tokenStats/stats', { args: {} }).then(function (full) {
+            if (!alive) return
+            if (full && full.ok && full.value && !full.value.error) {
+              lastData = full.value
+              setData(full.value)
+              setErr(null)
+              setLoading(false)
+              // stale = 显示的是磁盘缓存，后台正在重扫：静默再拉直到新鲜。
+              if (full.value.stale && retries < 3) {
+                retries++
+                setTimeout(load, 2000)
+              }
+            } else {
+              setErr((full && full.value && full.value.error) || (full && !full.ok ? (full.error && full.error.message) : 'no data'))
               setLoading(false)
             }
-          } catch (e) { if (alive) { console.error('token-stats 加载失败', e); setErr(String(e && e.message ? e.message : e)); setLoading(false) } }
-        })()
+          }).catch(function (e) {
+            if (alive) { console.error('token-stats 加载失败', e); setErr(String(e && e.message ? e.message : e)); setLoading(false) }
+          })
+        }
+        load()
         return function () { alive = false }
       }, [tick])
       const body = []
@@ -191,7 +211,9 @@ window.__ModuleLoader__.load({
         body.push(react.createElement('div', { key: 'err', className: 'tstat-loading', style: { color: 'var(--dsw-alias-danger)' } }, '加载失败: ' + err))
       }
       return react.createElement('div', { className: 'tstat-page' },
-        react.createElement('div', { className: 'tstat-head' }, react.createElement('h2', { className: 'tstat-title' }, '使用统计'), react.createElement('div', { className: 'tstat-spacer' }), react.createElement('button', { className: 'tstat-refresh', disabled: loading, onClick: function () { setTick(function (t) { return t + 1 }) } }, loading ? '加载中…' : '刷新')),
+        react.createElement('div', { className: 'tstat-head' }, react.createElement('h2', { className: 'tstat-title' }, '使用统计'),
+          data && data.cachedAt ? react.createElement('span', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } }, '更新于 ' + fmtTime(data.cachedAt) + (data.stale ? '（后台刷新中…）' : '')) : null,
+          react.createElement('div', { className: 'tstat-spacer' }), react.createElement('button', { className: 'tstat-refresh', disabled: loading, onClick: function () { setTick(function (t) { return t + 1 }) } }, loading ? '加载中…' : '刷新')),
         loading && !data && !err ? react.createElement('div', { className: 'tstat-loading' }, '数据加载中…') : null, body)
     }
 
