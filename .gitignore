@@ -5,6 +5,9 @@ node_modules/
 dsh-navbar/lib/assets.json
 dsh-navbar/lib/mcp-servers.json
 dsh-navbar/lib/automation-assets.json
+dsh-navbar/lib/plugin-catalog.json
+dsh-navbar/lib/plugin-states.json
+dsh-navbar/lib/plugin-disabled.json
 dsh-token-stats/lib/token-stats-cache.json
 
 # Misc

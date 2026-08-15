@@ -166,7 +166,7 @@ export default class FileCardService extends TypertRemoteService {
 
     // -- describe_image: direct mimo call (Node fetch + browser UA) ----------
     if (fs !== undefined && attachments !== undefined) {
-      tools.register(defineTool({
+      const describeImageTool = defineTool({
         name: 'describe_image',
         description: '读取 ' + UPLOAD_DIR + ' 目录下的图片（png/jpg/webp/gif）并返回详细中文描述（颜色、形状、布局、任何文字/数字）。'
           + '【自动识别约定】当用户消息中出现 ' + UPLOAD_DIR + '/ 目录下的图片路径（png/jpg/jpeg/webp/gif）时，自动调用本工具识别，无需用户开口要求。'
@@ -201,7 +201,34 @@ export default class FileCardService extends TypertRemoteService {
           const description = await describeWithMimo(self.ctx, data, mediaType, exec.signal)
           return { description }
         },
-      }))
+      })
+      // Register through the nav panel's plugin tool registry so the plugin
+      // switch in the nav bar controls this tool LIVE (on = visible, off =
+      // unregistered). Fall back to direct registration when the registry is
+      // not mounted (e.g. dsh-navbar bundle absent).
+      const tryRegister = function () {
+        const pluginTools = ctx.get('pluginTools')
+        if (pluginTools === undefined) return false
+        try {
+          pluginTools.registerPluginTools('dsh-filecard', [describeImageTool])
+          return true
+        } catch (e) { return false }
+      }
+      if (!tryRegister()) {
+        // dsh-navbar may load after this bundle (profile bundle order puts
+        // dsh-filecard before dsh-navbar): wait for the pluginTools service
+        // to appear, then register through it. If it never appears, register
+        // directly so describe_image still works standalone. Node timers are
+        // available in the host bundle (no timer service dependency needed).
+        let attempts = 0
+        const iv = setInterval(function () {
+          attempts++
+          if (tryRegister()) clearInterval(iv)
+          else if (attempts > 40) { clearInterval(iv); tools.register(describeImageTool) }
+        }, 250)
+        // Clean up the retry timer when this plugin unloads.
+        try { ctx.effect(function () { return function () { clearInterval(iv) } }) } catch (e) { /* ctx already disposed */ }
+      }
     }
   }
 }

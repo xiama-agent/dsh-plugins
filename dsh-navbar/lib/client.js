@@ -74,8 +74,9 @@ window.__ModuleLoader__.load({
 
     const FEATURES = {
       plugins: [
-        { id: 'dsh-token-stats', name: 'dsh-token-stats', desc: '使用统计：会话视图内固定在「轨迹」之后的固态视图，Token 用量、热力图、趋势图与模型用量仪表盘。', locked: true },
+        { id: 'dsh-token-stats', name: 'dsh-token-stats', desc: '使用统计：会话视图内固定在「轨迹」之后的固态视图，Token 用量、热力图、趋势图与模型用量仪表盘。', locked: false },
         { id: 'dsh-filecard', name: 'dsh-filecard', desc: '文件卡片：输入框右端常驻卡片，拖入文件生成真实路径；附 describe_image 识图工具（mimo-v2.5 直连）。', locked: false },
+        { id: 'dsh-atfile', name: 'dsh-atfile', desc: '@文件引用：输入框输入 @ 搜索工作区文件，选中插入 @路径，发送时自动标记为工作区引用（融合自社区 dsh-at-file）。', locked: false },
         { id: 'dsh-navbar', name: 'dsh-navbar', desc: '导航栏：本右侧面板，聚合所有功能入口。', locked: true },
       ],
       subagents: [], // filled dynamically from localStorage in FeatureList
@@ -324,7 +325,7 @@ window.__ModuleLoader__.load({
       const [transport, setTransport] = react.useState(editing && editing.transport ? editing.transport : 'stdio')
       const [command, setCommand] = react.useState(editing ? (editing.command || '') : '')
       const [argsText, setArgsText] = react.useState(editing && Array.isArray(editing.args) ? editing.args.join(' ') : '')
-      const [envText, setEnvText] = react.useState(editing && editing.env ? Object.keys(editing.env).map(function (k) { return k + '=' + editing.env[k] }).join('\n') : '')
+      const [envText, setEnvText] = react.useState(editing && editing.env ? Object.keys(editing.env).filter(function (k) { return k && k.trim() && k !== '{' && k !== '}' }).map(function (k) { return k + '=' + editing.env[k] }).join('\n') : '')
       const [cwd, setCwd] = react.useState(editing ? (editing.cwd || '') : '')
       const [url, setUrl] = react.useState(editing ? (editing.url || '') : '')
       const [timeoutMs, setTimeoutMs] = react.useState(editing && editing.timeoutMs ? String(editing.timeoutMs) : '30000')
@@ -376,18 +377,42 @@ window.__ModuleLoader__.load({
         if (mode === 'json') {
           try { payload = parseJson(jsonText) } catch (e) { setError(String(e && e.message ? e.message : e)); return }
         } else {
-          if (!serverName.trim()) { setError('请填写服务器名称（serverName）'); return }
+          const sn = (serverName.trim() || name.trim())
+          if (!sn) { setError('请填写服务器名称'); return }
           if (transport === 'stdio' && !command.trim()) { setError('stdio 类型需要命令'); return }
           if (transport === 'streamable-http' && !url.trim()) { setError('streamable-http 类型需要 URL'); return }
           const env = {}
-          envText.split('\n').map(function (l) { return l.trim() }).filter(Boolean).forEach(function (line) {
-            const eq = line.indexOf('=')
-            if (eq > 0) env[line.slice(0, eq).trim()] = line.slice(eq + 1).trim()
-            else env[line] = ''
-          })
+          const envInput = envText.trim()
+          // Support pasting a JSON object directly: {"KEY": "VALUE", ...}
+          if (envInput.startsWith('{')) {
+            try {
+              const parsed = JSON.parse(envInput)
+              if (parsed && typeof parsed === 'object') {
+                Object.keys(parsed).forEach(function (k) {
+                  env[k.trim()] = String(parsed[k])
+                })
+              }
+            } catch (e) { /* not valid JSON -> fall through to line parsing */ }
+          }
+          // Line-by-line KEY=VALUE parsing (also tolerates "KEY": "VALUE" lines).
+          if (Object.keys(env).length === 0) {
+            envText.split('\n').map(function (l) { return l.trim() }).filter(Boolean).forEach(function (line) {
+              const eq = line.indexOf('=')
+              const colon = line.indexOf(':')
+              if (eq > 0) {
+                env[line.slice(0, eq).trim()] = line.slice(eq + 1).trim()
+              } else if (colon > 0) {
+                // "KEY": "VALUE" style (JSON fragment without braces)
+                const key = line.slice(0, colon).replace(/^["']|["']$/g, '').trim()
+                const val = line.slice(colon + 1).replace(/^["']|["']$/g, '').trim()
+                if (key) env[key] = val
+              }
+              // lines without '=' or ':' are ignored (braces, stray text)
+            })
+          }
           payload = {
-            name: name.trim() || serverName.trim(),
-            serverName: serverName.trim(),
+            name: name.trim() || sn,
+            serverName: sn,
             transport: transport,
             command: command.trim(),
             args: argsText.split(' ').map(function (a) { return a.trim() }).filter(Boolean),
@@ -425,15 +450,9 @@ window.__ModuleLoader__.load({
               react.createElement('span', { style: { fontSize: 11, color: 'var(--dsw-alias-label-secondary)', marginTop: 2 } }, '支持直接粘贴 {"server-name": {...}} 或 {"mcpServers": {"server-name": {...}}}'),
             )
           : react.createElement('div', null,
-              react.createElement('div', { style: { display: 'flex', gap: 10 } },
-                react.createElement('div', { style: Object.assign({}, field, { flex: 1 }) },
-                  react.createElement('span', { style: label }, '名称'),
-                  react.createElement('input', { style: input, value: name, placeholder: '显示名称', onChange: function (e) { setName(e.target.value) } }),
-                ),
-                react.createElement('div', { style: Object.assign({}, field, { flex: 1 }) },
-                  react.createElement('span', { style: label }, '服务器名（serverName）'),
-                  react.createElement('input', { style: input, value: serverName, placeholder: 'my-mcp-server', onChange: function (e) { setServerName(e.target.value) } }),
-                ),
+              react.createElement('div', { style: field },
+                react.createElement('span', { style: label }, '名称（即服务器名 serverName）'),
+                react.createElement('input', { style: input, value: name, placeholder: 'my-mcp-server', onChange: function (e) { setName(e.target.value); setServerName(e.target.value) } }),
               ),
               react.createElement('div', { style: field },
                 react.createElement('span', { style: label }, '类型'),
@@ -536,6 +555,202 @@ window.__ModuleLoader__.load({
       )
     }
 
+    // --- Plugin marketplace panel (pinned first section) ---------------------
+    function MarketPanel(props) {
+      const connection = props.connection
+      const [plugins, setPlugins] = react.useState(null)
+      const [categories, setCategories] = react.useState([])
+      const [downloads, setDownloads] = react.useState([])
+      const [q, setQ] = react.useState('')
+      const [category, setCategory] = react.useState('')
+      const [busy, setBusy] = react.useState('')
+      const [error, setError] = react.useState('')
+      const [notice, setNotice] = react.useState('')
+      const [tooltip, setTooltip] = react.useState(null)
+      const field = { display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 10 }
+      const label = { fontSize: 12, color: 'var(--dsw-alias-label-secondary)' }
+      const input = { padding: '6px 10px', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 8, background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)', fontSize: 13 }
+      const refresh = function () {
+        rpcCall(connection, 'pluginMarketplace/categories', {}).then(function (list) {
+          if (Array.isArray(list)) setCategories(list)
+        })
+        rpcCall(connection, 'pluginMarketplace/listDownloads', {}).then(function (list) {
+          if (Array.isArray(list)) setDownloads(list)
+        })
+        rpcCall(connection, 'pluginMarketplace/listPlugins', { query: { q: q, category: category } }).then(function (list) {
+          if (Array.isArray(list)) setPlugins(list)
+        })
+      }
+      react.useEffect(function () {
+        refresh()
+        // Auto-sync from GitHub once on open so the catalog is always fresh
+        // (host caches for 5 min; failure is silent — local catalog shows).
+        rpcCall(connection, 'pluginMarketplace/refreshCatalog', {}).then(function (res) {
+          if (res && res.total) {
+            setNotice('已同步官方目录：共 ' + res.total + ' 个插件（实时链接索引）。')
+            // Re-list with the fresh catalog.
+            rpcCall(connection, 'pluginMarketplace/categories', {}).then(function (list) {
+              if (Array.isArray(list)) setCategories(list)
+            })
+            rpcCall(connection, 'pluginMarketplace/listPlugins', { query: { q: q, category: category } }).then(function (list) {
+              if (Array.isArray(list)) setPlugins(list)
+            })
+          }
+        }).catch(function () { /* silent: local catalog already shown */ })
+        // eslint-disable-next-line
+      }, [])
+      const search = function (catOverride, qOverride) {
+        setError('')
+        const useCat = catOverride === undefined ? category : catOverride
+        const useQ = qOverride === undefined ? q : qOverride
+        rpcCall(connection, 'pluginMarketplace/listPlugins', { query: { q: useQ, category: useCat } }).then(function (list) {
+          if (Array.isArray(list)) setPlugins(list)
+        })
+      }
+      const refreshOnline = function () {
+        if (busy) return
+        setBusy('__refresh')
+        setError('')
+        rpcCall(connection, 'pluginMarketplace/refreshCatalog', {}).then(function (res) {
+          if (res && res.total) {
+            setNotice('已同步官方目录最新数据：共 ' + res.total + ' 个插件（新增/更新 ' + res.fresh + '）。')
+            refresh()
+          } else {
+            setError('刷新失败：RPC 无响应')
+          }
+          setBusy('')
+        }).catch(function (e) {
+          setError(String(e && e.message ? e.message : e))
+          setBusy('')
+        })
+      }
+      const download = function (p) {
+        if (busy) return
+        setBusy(p.name)
+        setError('')
+        setNotice('')
+        const dirName = p.name.replace(/^[A-Za-z0-9_.-]+\//, '')
+        rpcCall(connection, 'pluginMarketplace/downloadPlugin', { url: p.url, name: dirName }).then(function (res) {
+          if (res && res.path) {
+            setNotice('已下载到 ' + res.path + (res.updated ? '（已更新）' : '') + '。告诉我，我会读取源码并融合进系统（插件→自制插件 / MCP→MCP服务器）。')
+            rpcCall(connection, 'pluginMarketplace/listDownloads', {}).then(function (list) {
+              if (Array.isArray(list)) setDownloads(list)
+            })
+          } else {
+            setError('下载失败：RPC 无响应')
+          }
+          setBusy('')
+        }).catch(function (e) {
+          setError(String(e && e.message ? e.message : e))
+          setBusy('')
+        })
+      }
+      const dlNames = {}
+      for (const d of downloads) dlNames[d.name] = true
+      const isDownloaded = function (p) {
+        const base = p.name.replace(/^[A-Za-z0-9_.-]+\//, '')
+        return !!dlNames[base]
+      }
+      return react.createElement('div', null,
+        react.createElement('div', { style: field },
+          react.createElement('span', { style: label }, '搜索插件（官方 awesome-dsh-plugin 目录 · 实时数据源）'),
+          react.createElement('div', { style: { display: 'flex', gap: 6 } },
+            react.createElement('input', { style: Object.assign({}, input, { flex: 1 }), value: q, placeholder: '名称 / 关键词…', onChange: function (e) { setQ(e.target.value) }, onKeyDown: function (e) { if (e.key === 'Enter') search() } }),
+            react.createElement('button', { style: { padding: '6px 14px', border: 'none', background: 'var(--dsw-alias-brand-primary)', color: '#fff', borderRadius: 8, cursor: 'pointer', fontSize: 13 }, onClick: search }, '搜索'),
+            react.createElement('button', { style: { padding: '6px 14px', border: '1px solid var(--dsw-alias-border-l1)', background: 'transparent', color: 'var(--dsw-alias-label-primary)', borderRadius: 8, cursor: busy === '__refresh' ? 'wait' : 'pointer', fontSize: 13 }, onClick: refreshOnline }, busy === '__refresh' ? '同步中…' : '🔄 同步目录'),
+          ),
+        ),
+        react.createElement('div', { style: Object.assign({}, field, { flexDirection: 'row', flexWrap: 'wrap', gap: 6 }) },
+          react.createElement('button', {
+            key: '__all',
+            style: { padding: '3px 10px', borderRadius: 99, border: '1px solid var(--dsw-alias-border-l1)', cursor: 'pointer', fontSize: 11, background: category === '' ? 'var(--dsw-alias-brand-primary)' : 'transparent', color: category === '' ? '#fff' : 'var(--dsw-alias-label-primary)' },
+            onClick: function () { setCategory(''); search('', q) },
+          }, '全部'),
+          categories.map(function (c) {
+            return react.createElement('button', {
+              key: c.id,
+              style: { padding: '3px 10px', borderRadius: 99, border: '1px solid var(--dsw-alias-border-l1)', cursor: 'pointer', fontSize: 11, background: category === c.id ? 'var(--dsw-alias-brand-primary)' : 'transparent', color: category === c.id ? '#fff' : 'var(--dsw-alias-label-primary)' },
+              onClick: function () { setCategory(c.id); search(c.id, q) },
+            }, c.label + ' (' + c.count + ')')
+          }),
+        ),
+        error ? react.createElement('div', { style: { fontSize: 12, color: 'var(--dsw-alias-danger)', marginBottom: 8 } }, error) : null,
+        notice ? react.createElement('div', { style: { fontSize: 12, color: '#1a7f37', marginBottom: 8 } }, notice) : null,
+        plugins === null
+          ? react.createElement('div', { className: 'dsh-nav-placeholder' }, '加载插件目录中…')
+          : plugins.length === 0
+            ? react.createElement('div', { className: 'dsh-nav-placeholder' }, '没有匹配的插件')
+            : react.createElement('div', { className: 'dsh-plugins' },
+                plugins.map(function (p) {
+                  const downloaded = isDownloaded(p)
+                  const zh = (p.descZh && p.descZh.trim()) ? p.descZh : ''
+                  const shown = zh || p.desc
+                  return react.createElement('div', {
+                    key: p.url,
+                    className: 'dsh-plugin-card',
+                    style: { position: 'relative', cursor: 'help' },
+                    onMouseEnter: function (e) { setTooltip({ x: e.clientX, y: e.clientY, text: shown, name: p.name }) },
+                    onMouseMove: function (e) { setTooltip({ x: e.clientX, y: e.clientY, text: shown, name: p.name }) },
+                    onMouseLeave: function () { setTooltip(null) },
+                  },
+                    react.createElement('div', { className: 'dsh-plugin-row' },
+                      react.createElement('div', { className: 'dsh-plugin-name' }, p.name),
+                      react.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
+                        p.stars > 0 ? react.createElement('span', { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)' } }, '⭐ ' + p.stars) : null,
+                        react.createElement('a', { href: p.url, target: '_blank', rel: 'noreferrer', style: { fontSize: 12, color: 'var(--dsw-alias-brand-primary)', textDecoration: 'none' } }, 'GitHub ↗'),
+                        react.createElement('button', {
+                          style: { padding: '4px 10px', border: 'none', borderRadius: 8, cursor: busy === p.name ? 'wait' : 'pointer', fontSize: 12, background: downloaded ? 'var(--dsw-alias-border-l1)' : 'var(--dsw-alias-brand-primary)', color: downloaded ? 'var(--dsw-alias-label-secondary)' : '#fff', opacity: downloaded ? 0.7 : 1 },
+                          onClick: function () { if (!downloaded) download(p) },
+                        }, busy === p.name ? '下载中…' : (downloaded ? '已下载' : '下载')),
+                      ),
+                    ),
+                    react.createElement('div', { className: 'dsh-plugin-desc' }, p.categoryLabel + ' · ' + (zh || p.desc)),
+                    p.install ? react.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 } },
+                      react.createElement('code', {
+                        title: '点击复制安装命令',
+                        style: { background: 'var(--dsw-alias-bg-layer-2)', padding: '2px 8px', borderRadius: 4, fontSize: 11, color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer', wordBreak: 'break-all', flex: 1 },
+                        onClick: function () {
+                          if (navigator.clipboard) {
+                            navigator.clipboard.writeText(p.install).then(function () { setNotice('已复制安装命令：' + p.install) }, function () {})
+                          }
+                        },
+                      }, p.install),
+                    ) : null,
+                  )
+                }),
+              ),
+        tooltip ? react.createElement('div', {
+          style: {
+            position: 'fixed',
+            left: Math.min(tooltip.x + 14, window.innerWidth - 320),
+            top: Math.min(tooltip.y + 14, window.innerHeight - 140),
+            zIndex: 9999,
+            maxWidth: 300,
+            padding: '10px 12px',
+            border: '1px solid var(--dsw-alias-border-l2)',
+            borderRadius: 12,
+            background: 'var(--dsw-alias-bg-layer-3)',
+            boxShadow: 'var(--dsw-shadow-lv2)',
+            pointerEvents: 'none',
+            fontSize: 12,
+            lineHeight: '18px',
+            color: 'var(--dsw-alias-label-primary)',
+          },
+        },
+          react.createElement('strong', { style: { display: 'block', marginBottom: 4, fontSize: 13 } }, tooltip.name),
+          react.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)' } }, tooltip.text),
+        ) : null,
+        downloads.length > 0 ? react.createElement('div', { style: { marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--dsw-alias-border-l1)' } },
+          react.createElement('span', { style: Object.assign({}, label, { display: 'block', marginBottom: 4 }) }, '已下载（' + downloads.length + '）'),
+          downloads.map(function (d) {
+            return react.createElement('div', { key: d.path, style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary)', padding: '3px 0' } },
+              '📁 ' + d.name + ' · ' + d.fileCount + ' 个文件 · ' + d.path,
+            )
+          }),
+        ) : null,
+      )
+    }
+
     function FeatureList(props) {
       const section = props.section
       const onEdit = props.onEdit
@@ -609,6 +824,22 @@ window.__ModuleLoader__.load({
         window.addEventListener('dsh-feature-toggle', onChange)
         return function () { alive = false; window.removeEventListener('dsh-feature-toggle', onChange) }
       }, [section])
+      // For plugins, load the live tool registry from the host so switches
+      // reflect the REAL registered/unregistered state of each plugin's tools.
+      const [hostPlugins, setHostPlugins] = react.useState(null)
+      react.useEffect(function () {
+        if (section !== 'plugins') return
+        var alive = true
+        function refresh() {
+          rpcCall(connection, 'pluginTools/listPlugins', {}).then(function (list) {
+            if (alive && Array.isArray(list)) setHostPlugins(list)
+          })
+        }
+        refresh()
+        function onChange() { refresh() }
+        window.addEventListener('dsh-feature-toggle', onChange)
+        return function () { alive = false; window.removeEventListener('dsh-feature-toggle', onChange) }
+      }, [section])
       // For automation, also poll live background jobs every 3 seconds.
       react.useEffect(function () {
         if (section !== 'automation') return
@@ -622,7 +853,33 @@ window.__ModuleLoader__.load({
         window.addEventListener('dsh-feature-toggle', onChange)
         return function () { window.removeEventListener('dsh-feature-toggle', onChange) }
       }, [])
-      const items = (section === 'subagents' ? (hostAssets || loadSubagentAssets()) : section === 'mcp' ? (hostMcp || []) : section === 'automation' ? (hostAuto || []) : base).slice().sort(function (a, b) {
+      // Merge static plugin metadata (name/desc/locked) with live registry
+      // state. Static Chinese descriptions win over host English ones.
+      const pluginItems = (function () {
+        if (section !== 'plugins') return null
+        const live = hostPlugins || []
+        const meta = {}
+        for (const m of base) meta[m.id] = m
+        const merged = []
+        const seen = {}
+        for (const lp of live) {
+          seen[lp.id] = true
+          const m = meta[lp.id]
+          merged.push(m
+            ? Object.assign({}, lp, {
+                desc: m.desc || lp.desc || '',
+                // host 是权威：系统/锁定判定以 host 为准，静态仅兜底
+                locked: lp.locked !== undefined ? lp.locked : (m.locked !== undefined ? m.locked : false),
+              })
+            : lp)
+        }
+        // Static entries not yet reported by the host (e.g. host not loaded).
+        for (const m of base) {
+          if (!seen[m.id]) merged.push(m)
+        }
+        return merged
+      })()
+      const items = (section === 'subagents' ? (hostAssets || loadSubagentAssets()) : section === 'mcp' ? (hostMcp || []) : section === 'automation' ? (hostAuto || []) : pluginItems || base).slice().sort(function (a, b) {
         // System components (locked) go below switchable entries.
         return (a.locked ? 1 : 0) - (b.locked ? 1 : 0)
       })
@@ -670,12 +927,21 @@ window.__ModuleLoader__.load({
         )
       }
       const statusText = function (p) {
-        if (p.system) return '系统（cordis.patch.yml）'
+        if (p.system) {
+          if (p.status === 'connected') return '已连接 · ' + p.toolCount + ' 个工具'
+          if (p.status === 'unknown') return '系统配置（工具未注册）'
+          return p.status || '系统'
+        }
         if (!p.enabled) return '已关闭'
         if (p.status === 'connected') return '已连接 · ' + p.toolCount + ' 个工具'
         if (p.status === 'connecting') return '连接中…'
         if (p.status === 'error') return '错误: ' + (p.error || 'unknown')
         return '未知状态'
+      }
+      const configSummary = function (p) {
+        if (p.transport === 'streamable-http') return 'streamable-http · ' + (p.url || '')
+        if (p.command) return 'stdio · ' + p.command + (p.args && p.args.length ? ' ' + p.args.join(' ').slice(0, 40) : '')
+        return '系统（cordis.patch.yml）'
       }
       const toggleMcp = function (p) {
         rpcCall(connection, 'mcpServers/saveServer', { server: Object.assign({}, p, { enabled: !p.enabled }) }).then(function (list) {
@@ -702,44 +968,91 @@ window.__ModuleLoader__.load({
           })
         }
       }
+      // Live plugin switch with OPTIMISTIC UI update: flip the local list
+      // immediately so the toggle responds on the first click, then tell the
+      // host to register/unregister the plugin's tools for real. The host's
+      // fresh list (returned by setPluginEnabled) then replaces the local
+      // state, keeping the switch in sync with actual registration.
+      // For external plugins (no tool registry, e.g. dshmarket) the host
+      // hot-mounts/unmounts the whole bundle via the loader — host side is
+      // live instantly, and a page refresh fully applies the client side.
+      const togglePlugin = function (p) {
+        const next = !(p.enabled === undefined ? featureEnabled('plugins', p.id) : !!p.enabled)
+        setHostPlugins(function (list) {
+          if (!Array.isArray(list)) return list
+          return list.map(function (x) {
+            return x.id === p.id ? Object.assign({}, x, { enabled: next }) : x
+          })
+        })
+        setFeatureEnabled('plugins', p.id, next)
+        rpcCall(connection, 'pluginTools/setPluginEnabled', { pluginId: p.id, enabled: next }).then(function (list) {
+          if (Array.isArray(list)) setHostPlugins(list)
+          if (p.external) {
+            const msg = next
+              ? '已开启「' + p.name + '」：host 端已实时装载，刷新页面后其界面完全生效。现在刷新吗？'
+              : '已关闭「' + p.name + '」：host 端已实时卸载，刷新页面后其界面完全移除。现在刷新吗？'
+            window.setTimeout(function () {
+              if (window.confirm(msg)) window.location.reload()
+            }, 250)
+          }
+        })
+      }
       return react.createElement('div', { className: 'dsh-plugins' },
         headerBtn,
         jobsBlock,
         items.map(function (p) {
-          const enabled = section === 'subagents' || section === 'automation' ? assetEnabled(p) : featureEnabled(section, p.id)
+          const enabled = section === 'subagents' || section === 'automation' ? assetEnabled(p)
+            : section === 'plugins' ? (p.enabled === undefined ? featureEnabled(section, p.id) : !!p.enabled)
+            : featureEnabled(section, p.id)
           let extra = p.desc
           if (section === 'subagents' && p.model) extra = '模型: ' + p.model + (p.prompt ? ' · ' + String(p.prompt).slice(0, 30) : '')
-          if (section === 'mcp') extra = statusText(p)
+          if (section === 'mcp') extra = configSummary(p)
           if (section === 'automation' && p.spec) extra = '规格: ' + p.spec
-          const locked = !!p.locked || p.system
+          if (section === 'plugins' && p.pending) {
+            extra = '⏳ 已从插件商城下载，待融合。让智能体读取 ' + (p.downloadPath || '') + ' 并整合。'
+          } else if (section === 'plugins' && p.external) {
+            // 外部安装的插件（dshmarket 等）：显示来源而不是工具开关信息
+            const src = p.source === 'link' ? '本地链接 · ' + (p.sourceDetail || '')
+              : p.source === 'github' ? 'GitHub · ' + (p.sourceDetail || '')
+              : p.source === 'hot' ? '热挂载'
+              : 'npm · ' + (p.sourceDetail || '')
+            extra = (p.desc ? p.desc + ' · ' : '') + '来源: ' + src
+          } else if (section === 'plugins' && !p.locked) {
+            const toolInfo = '工具: ' + (Array.isArray(p.tools) && p.tools.length ? p.tools.join('、') : '无') + ' · 已注册 ' + (p.liveToolCount || 0) + '/' + (p.toolCount || 0)
+            extra = (p.desc ? p.desc + ' · ' : '') + toolInfo
+          }
+          const locked = !!p.locked || p.system || !!p.pending
           return react.createElement('div', { key: p.id, className: 'dsh-plugin-card' },
             react.createElement('div', { className: 'dsh-plugin-row' },
-              react.createElement('div', { className: 'dsh-plugin-name' }, p.name),
+              react.createElement('div', { className: 'dsh-plugin-name' },
+                p.name,
+                p.version ? react.createElement('span', { style: { marginLeft: 6, fontSize: 11, fontWeight: 400, color: 'var(--dsw-alias-label-secondary)' } }, 'v' + p.version) : null,
+              ),
               react.createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
-                section === 'subagents' || (section === 'mcp' && !p.system) || section === 'automation'
+                section === 'subagents' || section === 'mcp' || section === 'automation'
                   ? react.createElement('button', { style: { border: 'none', background: 'transparent', color: 'var(--dsw-alias-brand-primary)', cursor: 'pointer', fontSize: 12 }, onClick: function () { onEdit(p) } }, '编辑')
                   : null,
-                section === 'mcp' && !p.system
+                section === 'mcp'
                   ? react.createElement('button', { style: { border: 'none', background: 'transparent', color: 'var(--dsw-alias-danger)', cursor: 'pointer', fontSize: 12 }, onClick: function () { deleteMcp(p) } }, '删除')
                   : null,
                 section === 'automation'
                   ? react.createElement('button', { style: { border: 'none', background: 'transparent', color: 'var(--dsw-alias-danger)', cursor: 'pointer', fontSize: 12 }, onClick: function () { deleteAuto(p) } }, '删除')
                   : null,
                 locked
-                  ? react.createElement('span', { className: 'dsh-plugin-locked' }, p.system ? '系统' : '系统组件')
+                  ? react.createElement('span', { className: 'dsh-plugin-locked' }, p.pending ? '待融合' : '系统组件')
                   : react.createElement('button', {
                       className: 'dsh-switch' + (enabled ? ' on' : ''),
                       title: enabled ? '点击关闭' : '点击开启',
                       onClick: function () {
                         if (section === 'mcp') toggleMcp(p)
                         else if (section === 'automation') toggleAuto(p)
-                        else setFeatureEnabled(section, p.id, !enabled)
+                        else togglePlugin(p)
                       },
                     }),
               ),
             ),
             react.createElement('div', { className: 'dsh-plugin-desc' }, extra),
-            react.createElement('span', { className: 'dsh-plugin-status' + (enabled ? ' ok' : ' off') }, section === 'mcp' ? statusText(p) : (enabled ? '已开启' : '已关闭')),
+            react.createElement('span', { className: 'dsh-plugin-status' + (enabled ? ' ok' : ' off') }, p.pending ? '⏳ 待融合' : (section === 'mcp' ? statusText(p) : (enabled ? '已开启' : '已关闭'))),
           )
         }),
       )
@@ -784,22 +1097,22 @@ window.__ModuleLoader__.load({
               ? react.createElement(SubagentForm, { editing: editAsset, connection: props.connection, useSessions: props.useSessions, onClose: function () { setEditingOn(false); setEditAsset(null) } })
               : editingMcp
                 ? react.createElement(McpForm, {
-                    editing: editAsset,
-                    connection: props.connection,
-                    onClose: function () { setEditingOn(false); setEditAsset(null) },
-                    onSaved: function (list) { setMcpList(list) },
-                  })
-                : editingAuto
-                  ? react.createElement(AssetForm, {
                       editing: editAsset,
                       connection: props.connection,
                       onClose: function () { setEditingOn(false); setEditAsset(null) },
+                      onSaved: function (list) { setMcpList(list) },
                     })
-                  : react.createElement(FeatureList, {
-                    section: snap.active,
-                    connection: props.connection,
-                    onEdit: function (asset) { setEditAsset(asset); setEditingOn(true) },
-                  }),
+                  : editingAuto
+                    ? react.createElement(AssetForm, {
+                        editing: editAsset,
+                        connection: props.connection,
+                        onClose: function () { setEditingOn(false); setEditAsset(null) },
+                      })
+                    : react.createElement(FeatureList, {
+                      section: snap.active,
+                      connection: props.connection,
+                      onEdit: function (asset) { setEditAsset(asset); setEditingOn(true) },
+                    }),
           ),
         ),
       )
@@ -825,6 +1138,10 @@ window.__ModuleLoader__.load({
           },
         )
       })
+      // 插件商城 tab 已交给 dshmarket（见 scripts/patch-dshmarket.mjs：
+      // 它把 MarketSection 同时注册进 conversation.view 'market' 位置）。
+      // 我们保留 host 端 pluginMarketplace 服务（downloadPlugin 等）供
+      // dshmarket 的 fusion-download 路由调用；MarketPanel 组件保留备用。
     }
     exports.apply = apply
     exports.inject = inject
